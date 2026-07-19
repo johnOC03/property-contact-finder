@@ -1,0 +1,52 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SearchStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+/// A single owner/address search request and its final results, so past
+/// searches can be reviewed/audited without re-calling MBIE/OpenRouter.
+model SearchRequest {
+  id              String       @id @default(uuid())
+  ownerName       String
+  propertyAddress String?
+  status          SearchStatus @default(PENDING)
+  /// The full { candidates, otherPossibleMatches } result payload, including
+  /// per-candidate contact details and confidence scores, once completed.
+  resultJson      Json?
+  /// Non-fatal warnings collected during the search (e.g. "MBIE Entity/Role
+  /// Search unavailable"), stored as a JSON array of strings.
+  warningsJson    Json?
+  /// Set only when status is FAILED, for diagnosing unexpected errors.
+  errorMessage    String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([ownerName])
+  @@index([status])
+}
+
+/// Raw MBIE API response cache (Entity/Role Search + NZBN Entity Detail),
+/// keyed by a request signature (e.g. "entity-role-search:john smith" or
+/// "nzbn-entity:9429...") so repeated searches for the same name/company
+/// don't re-hit the rate-limited MBIE APIs. Naive TTL-based expiry, not a
+/// full sync — see IMPLEMENTATION_PLAN.md section 12.
+model MbieCache {
+  id               String   @id @default(uuid())
+  requestSignature String   @unique
+  endpoint         String
+  response         Json
+  fetchedAt        DateTime @default(now())
+  expiresAt        DateTime
+
+  @@index([expiresAt])
+}
