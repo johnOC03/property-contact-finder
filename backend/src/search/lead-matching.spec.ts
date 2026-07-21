@@ -47,6 +47,16 @@ describe('hasCorroboratingAddressSignal', () => {
     const lead: ContactLead = { ...baseLead, other: '5 Different Road, Wellington' };
     expect(hasCorroboratingAddressSignal(lead, ['1 Shea Terrace, Takapuna, Auckland'])).toBe(false);
   });
+
+  it('returns true when the explicit address field matches a known address, with no other/quote text', () => {
+    const lead: ContactLead = { ...baseLead, address: '1 Shea Terrace, Takapuna, Auckland 0622' };
+    expect(hasCorroboratingAddressSignal(lead, ['1 Shea Terrace, Takapuna, Auckland'])).toBe(true);
+  });
+
+  it('returns false when the explicit address field does not overlap with any known address', () => {
+    const lead: ContactLead = { ...baseLead, address: '5 Different Road, Wellington' };
+    expect(hasCorroboratingAddressSignal(lead, ['1 Shea Terrace, Takapuna, Auckland'])).toBe(false);
+  });
 });
 
 describe('leadCorroboratesCandidate', () => {

@@ -144,7 +144,8 @@ export default function Home() {
         </h1>
         <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
           Enter a property owner&apos;s name and address to search MBIE company
-          records for possible contact leads.
+          records, AI-powered web search, and other public sources for
+          possible contact leads.
         </p>
 
         <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4">
@@ -302,7 +303,7 @@ export default function Home() {
 
         {candidates && candidates.length === 0 && otherPossibleMatches.length === 0 && !error && (
           <p className="mt-6 text-sm text-zinc-500">
-            No matches found in MBIE company records for that name.
+            No matches found for that name across MBIE company records or web search.
           </p>
         )}
 

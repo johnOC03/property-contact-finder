@@ -5,22 +5,27 @@ import { EntityRoleClientService } from '../mbie/entity-role-client.service';
 import { formatNzbnAddress, NzbnClientService, NzbnEntityDetail } from '../mbie/nzbn-client.service';
 import { ContactLead, OpenRouterService } from '../ai/open-router.service';
 import { ConfidenceLabel, MatchingService } from '../matching/matching.service';
-import { leadCorroboratesCandidate } from './lead-matching';
+import { addressSimilarityScore } from '../matching/address-similarity';
+import { normalizeName } from '../matching/name-similarity';
+import { hasCorroboratingAddressSignal, leadCorroboratesCandidate, namesCorroborate } from './lead-matching';
+import { ContactDetail, dedupeContactDetails, RawContactDetail } from './contact-detail-dedupe';
 import { SearchRequestDto } from './dto/search-request.dto';
+
+export type { ContactDetail } from './contact-detail-dedupe';
 
 const YELLOW_OR_WHITE_PAGES_HOSTS = ['yellow.co.nz', 'whitepages.co.nz'];
 
-export interface ContactDetail {
-  type: 'email' | 'phone' | 'other';
-  value: string;
-  sourceUrl?: string;
-  sourceType: 'YELLOW_PAGES' | 'WEB_SEARCH';
-}
+/** Caps a candidate discovered only via AI web search (no MBIE record at
+ * all) to Low confidence — unlike an MBIE-only match, it has no
+ * government-register backing, so it's never allowed to reach Medium/High
+ * on its own, however strong the name/address match looks. */
+const AI_ONLY_MAX_SCORE = 49;
 
 export interface SearchCandidate {
   matchedName: string;
-  roleType: string;
-  status: string;
+  /** Absent for candidates discovered only via AI web search (no MBIE role at all). */
+  roleType?: string;
+  status?: string;
   companyName?: string;
   companyNzbn?: string;
   address?: string;
@@ -33,7 +38,7 @@ export interface SearchCandidate {
   /** Public contact details surfaced by AI web search (OpenRouter/Sonar)
    * under this candidate's same name — a corroborating, independent source. */
   contactDetails?: ContactDetail[];
-  sourceType: 'MBIE_ENTITY_ROLE';
+  sourceType: 'MBIE_ENTITY_ROLE' | 'AI_WEB_SEARCH' | 'AI_PROPERTY_CONNECTION';
   confidenceScore: number;
   /** null means the score fell below the "shown" threshold (< 20). */
   confidenceLabel: ConfidenceLabel | null;
@@ -165,7 +170,7 @@ export class SearchService {
     // results that already succeeded from the other source.
     const [roleResult, webResult] = await Promise.allSettled([
       this.entityRoleClient.searchPersonRoles(dto.ownerName),
-      this.openRouterService.searchContactDetails(dto.ownerName, dto.address),
+      this.openRouterService.searchContactDetailsEnsemble(dto.ownerName, dto.address),
     ]);
 
     let rawCandidates: RawCandidate[] = [];
@@ -196,7 +201,14 @@ export class SearchService {
 
     const nzbnDetailByNzbn = await this.fetchNzbnDetails(rawCandidates, warnings);
 
-    const scored: SearchCandidate[] = rawCandidates
+    // Tracks which AI web search leads corroborated at least one MBIE
+    // candidate, so leftover leads (found by AI web search alone, with no
+    // matching MBIE record at all) can still be surfaced below instead of
+    // silently discarded — MBIE/NZBN are not the only way to discover a
+    // possible owner.
+    const claimedLeads = new Set<ContactLead>();
+
+    const mbieScored: SearchCandidate[] = rawCandidates
       .map((candidate) => {
         const nzbnDetail = candidate.companyNzbn ? nzbnDetailByNzbn.get(candidate.companyNzbn) : undefined;
         const registeredAddress = nzbnDetail && this.findRegisteredAddress(nzbnDetail);
@@ -211,6 +223,7 @@ export class SearchService {
         const matchingLeads = contactLeads.filter((lead) =>
           leadCorroboratesCandidate(lead, candidate.matchedName, knownAddresses),
         );
+        matchingLeads.forEach((lead) => claimedLeads.add(lead));
         const contactDetails = this.buildContactDetails(matchingLeads);
         const hasCorroboratingWebLead = matchingLeads.length > 0;
 
@@ -227,8 +240,14 @@ export class SearchService {
           confidenceLabel: match.label,
           rationale: match.rationale,
         };
-      })
-      .sort((a, b) => b.confidenceScore - a.confidenceScore);
+      });
+
+    const webOnlyCandidates = this.buildWebOnlyCandidates(dto, contactLeads, claimedLeads);
+    const propertyConnectionCandidates = this.buildPropertyConnectionCandidates(dto, contactLeads, claimedLeads);
+
+    const scored = [...mbieScored, ...webOnlyCandidates, ...propertyConnectionCandidates].sort(
+      (a, b) => b.confidenceScore - a.confidenceScore,
+    );
 
     const candidates = scored.filter((candidate) => candidate.confidenceLabel !== null);
     const otherPossibleMatches = candidates.length === 0 ? scored.slice(0, MAX_OTHER_MATCHES) : [];
@@ -239,12 +258,16 @@ export class SearchService {
   /**
    * Converts matched AI web search leads into displayable contact details,
    * tagging each as YELLOW_PAGES when the source URL is from a known
-   * Yellow/White Pages host, or WEB_SEARCH otherwise.
+   * Yellow/White Pages host, or WEB_SEARCH otherwise, then runs the result
+   * through `dedupeContactDetails` so the same phone/email/address found by
+   * several corroborating leads (the AI search ensemble runs several times,
+   * often against different sources) is shown once with every distinct
+   * source retained, instead of repeating once per source.
    */
   private buildContactDetails(leads: ContactLead[]): ContactDetail[] {
-    const details: ContactDetail[] = [];
+    const details: RawContactDetail[] = [];
     for (const lead of leads) {
-      const sourceType: ContactDetail['sourceType'] =
+      const sourceType: RawContactDetail['sourceType'] =
         lead.sourceUrl && YELLOW_OR_WHITE_PAGES_HOSTS.some((host) => lead.sourceUrl?.includes(host))
           ? 'YELLOW_PAGES'
           : 'WEB_SEARCH';
@@ -257,8 +280,117 @@ export class SearchService {
       if (lead.other) {
         details.push({ type: 'other', value: lead.other, sourceUrl: lead.sourceUrl, sourceType });
       }
+      if (lead.address) {
+        details.push({ type: 'address', value: lead.address, sourceUrl: lead.sourceUrl, sourceType });
+      }
     }
-    return details;
+    return dedupeContactDetails(details);
+  }
+
+  /**
+   * Builds a single candidate from AI web search leads that didn't
+   * corroborate any MBIE candidate — i.e. a person the AI search found
+   * under a closely-matching name, with no MBIE/NZBN record at all. MBIE
+   * is not treated as the only way to discover a possible owner, but since
+   * this candidate rests entirely on unverified free text (no
+   * government-register backing), its score is capped well below what an
+   * MBIE-only match could reach (see AI_ONLY_MAX_SCORE).
+   */
+  private buildWebOnlyCandidates(
+    dto: SearchRequestDto,
+    contactLeads: ContactLead[],
+    claimedLeads: Set<ContactLead>,
+  ): SearchCandidate[] {
+    const unclaimedLeads = contactLeads.filter(
+      (lead) => !claimedLeads.has(lead) && lead.name && namesCorroborate(lead.name, dto.ownerName),
+    );
+    if (unclaimedLeads.length === 0) {
+      return [];
+    }
+
+    const additionalAddresses = unclaimedLeads
+      .map((lead) => lead.address)
+      .filter((address): address is string => !!address);
+    const contactDetails = this.buildContactDetails(unclaimedLeads);
+
+    const match = this.matchingService.score(
+      { ownerName: dto.ownerName, address: dto.address },
+      { matchedName: dto.ownerName, additionalAddresses, status: '' },
+      { maxScore: AI_ONLY_MAX_SCORE },
+    );
+
+    return [
+      {
+        matchedName: dto.ownerName,
+        contactDetails: contactDetails.length > 0 ? contactDetails : undefined,
+        sourceType: 'AI_WEB_SEARCH',
+        confidenceScore: match.score,
+        confidenceLabel: match.label,
+        rationale: match.rationale,
+      },
+    ];
+  }
+
+  /**
+   * Builds candidates for a DIFFERENT person/company than the one searched
+   * for, found via the property-connection AI prompt (see
+   * OpenRouterService.buildPropertyConnectionPrompt) — e.g. the actual
+   * current registered owner, when it isn't the searched name. Requires
+   * both a property address to anchor on and an independent address match,
+   * since there's no name-similarity signal to lean on at all here. Always
+   * capped at Low confidence: a single, unverified AI web search hit about
+   * an entirely different identity is never trusted further than that.
+   */
+  private buildPropertyConnectionCandidates(
+    dto: SearchRequestDto,
+    contactLeads: ContactLead[],
+    claimedLeads: Set<ContactLead>,
+  ): SearchCandidate[] {
+    if (!dto.address) {
+      return [];
+    }
+
+    const alternativeLeads = contactLeads.filter(
+      (lead) =>
+        !claimedLeads.has(lead) &&
+        lead.name &&
+        !namesCorroborate(lead.name, dto.ownerName) &&
+        hasCorroboratingAddressSignal(lead, [dto.address]),
+    );
+    if (alternativeLeads.length === 0) {
+      return [];
+    }
+
+    const groups = new Map<string, ContactLead[]>();
+    for (const lead of alternativeLeads) {
+      const key = normalizeName(lead.name!);
+      groups.set(key, [...(groups.get(key) ?? []), lead]);
+    }
+
+    return [...groups.values()].map((leads) => {
+      const name = leads[0].name!;
+      const addressScore = Math.max(
+        ...leads.map((lead) =>
+          addressSimilarityScore(dto.address, [lead.address, lead.other, lead.quote].filter(Boolean).join(' ')),
+        ),
+      );
+      // hasCorroboratingAddressSignal already guarantees addressScore >= 20
+      // (the corroboration threshold), so this always lands in the Low band.
+      const score = Math.min(AI_ONLY_MAX_SCORE, addressScore);
+      const contactDetails = this.buildContactDetails(leads);
+      const relationshipNote = [...new Set(leads.map((lead) => lead.relationshipNote).filter(Boolean))].join('; ');
+      const bestAddress = leads.find((lead) => lead.address)?.address ?? dto.address;
+
+      return {
+        matchedName: name,
+        contactDetails: contactDetails.length > 0 ? contactDetails : undefined,
+        sourceType: 'AI_PROPERTY_CONNECTION',
+        confidenceScore: score,
+        // Guaranteed by the >= 20 address-corroboration gate above.
+        confidenceLabel: 'Low',
+        rationale: `"${name}" is a different name than searched ("${dto.ownerName}") but public web search found them connected to "${dto.address}"${relationshipNote ? ` (${relationshipNote})` : ''}; matching address: ${bestAddress}; this is a single, unverified source and should be manually confirmed.`,
+      };
+    });
   }
 
   /**

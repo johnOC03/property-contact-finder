@@ -2,6 +2,8 @@ import type { ConfidenceLabel, SearchCandidate } from "@/lib/api";
 
 const SOURCE_LABELS: Record<SearchCandidate["sourceType"], string> = {
   MBIE_ENTITY_ROLE: "MBIE Entity/Role Search",
+  AI_WEB_SEARCH: "AI Web Search",
+  AI_PROPERTY_CONNECTION: "AI Web Search · different name",
 };
 
 const CONFIDENCE_STYLES: Record<ConfidenceLabel | "None", string> = {
@@ -12,7 +14,7 @@ const CONFIDENCE_STYLES: Record<ConfidenceLabel | "None", string> = {
 };
 
 const CONTACT_SOURCE_LABELS: Record<
-  NonNullable<SearchCandidate["contactDetails"]>[number]["sourceType"],
+  NonNullable<SearchCandidate["contactDetails"]>[number]["sources"][number]["sourceType"],
   string
 > = {
   YELLOW_PAGES: "Yellow Pages",
@@ -27,17 +29,27 @@ export function CandidateCard({ candidate }: { candidate: SearchCandidate }) {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-lg font-semibold">{candidate.matchedName}</p>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            {candidate.roleType}
-            {candidate.companyName ? ` at ${candidate.companyName}` : ""} ·{" "}
-            <span className="capitalize">{candidate.status}</span>
-            {candidate.companyStatus && (
-              <>
-                {" "}
-                · company: <span>{candidate.companyStatus}</span>
-              </>
-            )}
-          </p>
+          {candidate.roleType ? (
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              {candidate.roleType}
+              {candidate.companyName ? ` at ${candidate.companyName}` : ""} ·{" "}
+              <span className="capitalize">{candidate.status}</span>
+              {candidate.companyStatus && (
+                <>
+                  {" "}
+                  · company: <span>{candidate.companyStatus}</span>
+                </>
+              )}
+            </p>
+          ) : candidate.sourceType === "AI_PROPERTY_CONNECTION" ? (
+            <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+              ⚠ Different name than searched — found via a connection to the property address (AI web search only).
+            </p>
+          ) : (
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              No MBIE company/director record found — this lead comes from public web search only.
+            </p>
+          )}
           {candidate.address && (
             <p className="mt-1 text-sm text-zinc-500">{candidate.address}</p>
           )}
@@ -54,20 +66,26 @@ export function CandidateCard({ candidate }: { candidate: SearchCandidate }) {
                   <span className="font-medium capitalize">{detail.type}:</span>{" "}
                   {detail.value}{" "}
                   <span className="text-xs text-zinc-400">
-                    ({CONTACT_SOURCE_LABELS[detail.sourceType]}
-                    {detail.sourceUrl ? (
-                      <>
-                        {" \u2013 "}
-                        <a
-                          href={detail.sourceUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="underline"
-                        >
-                          source
-                        </a>
-                      </>
-                    ) : null}
+                    (
+                    {detail.sources.map((source, sourceIndex) => (
+                      <span key={sourceIndex}>
+                        {sourceIndex > 0 ? ", " : ""}
+                        {CONTACT_SOURCE_LABELS[source.sourceType]}
+                        {source.sourceUrl ? (
+                          <>
+                            {" \u2013 "}
+                            <a
+                              href={source.sourceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline"
+                            >
+                              source{detail.sources.length > 1 ? ` ${sourceIndex + 1}` : ""}
+                            </a>
+                          </>
+                        ) : null}
+                      </span>
+                    ))}
                     )
                   </span>
                 </li>

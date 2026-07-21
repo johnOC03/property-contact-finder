@@ -122,4 +122,19 @@ describe('MatchingService', () => {
     expect(result.rationale).not.toContain('undefined');
     expect(result.rationale).toContain('does not match');
   });
+
+  it('caps the score at maxScore even when the raw name+address signals would score higher', () => {
+    const uncapped = service.score(
+      { ownerName: 'John Smith', address: '12 Queen St, Auckland' },
+      { matchedName: 'John Smith', address: '12 Queen Street, Auckland', status: '' },
+    );
+    const capped = service.score(
+      { ownerName: 'John Smith', address: '12 Queen St, Auckland' },
+      { matchedName: 'John Smith', address: '12 Queen Street, Auckland', status: '' },
+      { maxScore: 49 },
+    );
+    expect(uncapped.score).toBe(80);
+    expect(capped.score).toBe(49);
+    expect(capped.label).toBe('Low');
+  });
 });

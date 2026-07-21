@@ -58,7 +58,7 @@ output can always be explained on demand. See
 | Database | PostgreSQL (native local install) + Prisma ORM |
 | AI web search | OpenRouter, `perplexity/sonar` (built-in live web search with citations) |
 | Address autocomplete | Google Places Autocomplete (server-proxied — the key never reaches the browser) |
-| Company/director data | MBIE Entity/Role Search + NZBN Entity Detail |
+| Company/director data | MBIE Entity/Role Search + NZBN Entity Detail (this is the Companies Register) |
 
 ## Getting started
 

@@ -19,7 +19,7 @@ export interface MatchableCandidate {
    * the address signal without a separate scoring category.
    */
   additionalAddresses?: string[];
-  status: string;
+  status?: string;
   companyName?: string;
   /** NZBN entityStatusDescription (e.g. "Registered" vs "Removed"). */
   companyStatus?: string;
@@ -47,6 +47,17 @@ export interface MatchResult {
   breakdown: MatchBreakdown;
 }
 
+export interface ScoreOptions {
+  /**
+   * Caps the final score below what the raw signals would otherwise allow.
+   * Used for candidates discovered only via AI web search (no MBIE record
+   * at all) — unlike an MBIE-only match, there's no government-register
+   * backing, so it's deliberately never allowed to reach Medium/High on its
+   * own, however strong the name/address match looks.
+   */
+  maxScore?: number;
+}
+
 const INACTIVE_ROLE_STATUSES = new Set(['inactive', 'ceased', 'resigned', 'removed']);
 const ACTIVE_COMPANY_STATUSES = new Set(['registered']);
 const STATUS_DISCOUNT = 10;
@@ -58,7 +69,7 @@ const STATUS_DISCOUNT = 10;
  */
 @Injectable()
 export class MatchingService {
-  score(input: MatchInput, candidate: MatchableCandidate): MatchResult {
+  score(input: MatchInput, candidate: MatchableCandidate, options?: ScoreOptions): MatchResult {
     const nameScore = nameSimilarityScore(input.ownerName, candidate.matchedName);
 
     const candidateAddresses = [candidate.address, ...(candidate.additionalAddresses ?? [])].filter(
@@ -91,7 +102,8 @@ export class MatchingService {
     const statusDiscount = isStale ? STATUS_DISCOUNT : 0;
 
     const rawScore = nameScore + addressScore + corroborationBonus - statusDiscount;
-    const score = Math.max(0, Math.min(100, Math.round(rawScore)));
+    const cap = options?.maxScore ?? 100;
+    const score = Math.max(0, Math.min(cap, Math.round(rawScore)));
 
     return {
       score,

@@ -53,7 +53,7 @@ describe('SearchService', () => {
     jest
       .spyOn(entityRoleClient, 'searchPersonRoles')
       .mockResolvedValue({ pageSize: 10, currentPage: 1, totalResults: 0, roles: [] });
-    jest.spyOn(openRouterService, 'searchContactDetails').mockResolvedValue([]);
+    jest.spyOn(openRouterService, 'searchContactDetailsEnsemble').mockResolvedValue([]);
 
     const result = await service.search({ ownerName: 'John Smith', address: '12 Queen St' });
 
@@ -74,7 +74,7 @@ describe('SearchService', () => {
     jest
       .spyOn(entityRoleClient, 'searchPersonRoles')
       .mockResolvedValue({ pageSize: 10, currentPage: 1, totalResults: 0, roles: [] });
-    jest.spyOn(openRouterService, 'searchContactDetails').mockResolvedValue([]);
+    jest.spyOn(openRouterService, 'searchContactDetailsEnsemble').mockResolvedValue([]);
     prismaService.searchRequest.update.mockRejectedValueOnce(new Error('db unavailable'));
 
     await expect(service.search({ ownerName: 'John Smith' })).rejects.toThrow('db unavailable');
@@ -84,5 +84,102 @@ describe('SearchService', () => {
       where: { id: 'search-1' },
       data: { status: SearchStatus.FAILED, errorMessage: 'db unavailable' },
     });
+  });
+
+  it('surfaces an AI-web-search-only candidate (no MBIE record at all), capped at Low confidence', async () => {
+    jest
+      .spyOn(entityRoleClient, 'searchPersonRoles')
+      .mockResolvedValue({ pageSize: 10, currentPage: 1, totalResults: 0, roles: [] });
+    jest.spyOn(openRouterService, 'searchContactDetailsEnsemble').mockResolvedValue([
+      {
+        name: 'Jane Doe',
+        phone: '09 555 1234',
+        sourceUrl: 'https://www.yellow.co.nz/jane-doe',
+        quote: 'Jane Doe, 12 Queen Street, Auckland',
+      },
+    ]);
+
+    const result = await service.search({ ownerName: 'Jane Doe', address: '12 Queen Street, Auckland' });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      matchedName: 'Jane Doe',
+      sourceType: 'AI_WEB_SEARCH',
+      confidenceLabel: 'Low',
+    });
+    expect(result.candidates[0].confidenceScore).toBeLessThan(50);
+    expect(result.candidates[0].roleType).toBeUndefined();
+  });
+
+  it('does not surface a candidate for an AI web search lead whose name does not match the search input', async () => {
+    jest
+      .spyOn(entityRoleClient, 'searchPersonRoles')
+      .mockResolvedValue({ pageSize: 10, currentPage: 1, totalResults: 0, roles: [] });
+    jest
+      .spyOn(openRouterService, 'searchContactDetailsEnsemble')
+      .mockResolvedValue([{ name: 'Someone Unrelated', phone: '09 555 1234' }]);
+
+    const result = await service.search({ ownerName: 'Jane Doe', address: '12 Queen Street, Auckland' });
+
+    expect(result.candidates).toHaveLength(0);
+  });
+
+  it('surfaces a different, more strongly connected person found via the property-connection prompt, capped at Low', async () => {
+    jest
+      .spyOn(entityRoleClient, 'searchPersonRoles')
+      .mockResolvedValue({ pageSize: 10, currentPage: 1, totalResults: 0, roles: [] });
+    jest.spyOn(openRouterService, 'searchContactDetailsEnsemble').mockResolvedValue([
+      {
+        name: 'Michael Chen',
+        phone: '09 555 6789',
+        address: '12 Queen Street, Auckland',
+        relationshipNote: 'Director of a company registered at this address',
+        sourceUrl: 'https://www.companies-office.govt.nz/example',
+        quote: 'Michael Chen, director',
+      },
+    ]);
+
+    const result = await service.search({ ownerName: 'Jane Doe', address: '12 Queen Street, Auckland' });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      matchedName: 'Michael Chen',
+      sourceType: 'AI_PROPERTY_CONNECTION',
+      confidenceLabel: 'Low',
+    });
+    expect(result.candidates[0].confidenceScore).toBeLessThan(50);
+    expect(result.candidates[0].rationale).toContain('Michael Chen');
+    expect(result.candidates[0].rationale).toContain('Jane Doe');
+  });
+
+  it('does not surface a property-connection candidate when no property address was searched', async () => {
+    jest
+      .spyOn(entityRoleClient, 'searchPersonRoles')
+      .mockResolvedValue({ pageSize: 10, currentPage: 1, totalResults: 0, roles: [] });
+    jest.spyOn(openRouterService, 'searchContactDetailsEnsemble').mockResolvedValue([
+      {
+        name: 'Michael Chen',
+        phone: '09 555 6789',
+        address: '12 Queen Street, Auckland',
+        relationshipNote: 'Director of a company registered at this address',
+      },
+    ]);
+
+    const result = await service.search({ ownerName: 'Jane Doe' });
+
+    expect(result.candidates).toHaveLength(0);
+  });
+
+  it('does not surface a property-connection candidate when the different person has no matching address signal', async () => {
+    jest
+      .spyOn(entityRoleClient, 'searchPersonRoles')
+      .mockResolvedValue({ pageSize: 10, currentPage: 1, totalResults: 0, roles: [] });
+    jest
+      .spyOn(openRouterService, 'searchContactDetailsEnsemble')
+      .mockResolvedValue([{ name: 'Michael Chen', phone: '09 555 6789' }]);
+
+    const result = await service.search({ ownerName: 'Jane Doe', address: '12 Queen Street, Auckland' });
+
+    expect(result.candidates).toHaveLength(0);
   });
 });

@@ -37,17 +37,19 @@ export function namesCorroborate(leadName: string, candidateName: string): boole
 }
 
 /**
- * Checks whether a lead's own free text (its `other`/`quote` fields, which
- * often contain an address the AI found alongside the contact detail) lines
- * up with any address we already know for this search/candidate. This is
- * the "at least one other signal" requirement — a name match alone (even a
- * fuzzy one) is never enough to treat an AI web search lead as corroborating.
+ * Checks whether a lead's address signal — its explicit `address` field when
+ * the model reported one, plus its free text (`other`/`quote`, which may
+ * incidentally mention an address even when `address` wasn't populated) —
+ * lines up with any address we already know for this search/candidate. This
+ * is the "at least one other signal" requirement — a name match alone (even
+ * a fuzzy one) is never enough to treat an AI web search lead as
+ * corroborating.
  */
 export function hasCorroboratingAddressSignal(
   lead: ContactLead,
   knownAddresses: Array<string | undefined>,
 ): boolean {
-  const leadText = [lead.other, lead.quote].filter(Boolean).join(' ');
+  const leadText = [lead.address, lead.other, lead.quote].filter(Boolean).join(' ');
   if (!leadText) return false;
 
   return knownAddresses

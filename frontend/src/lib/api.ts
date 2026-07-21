@@ -3,24 +3,29 @@ export const API_BASE_URL =
 
 export type ConfidenceLabel = "High" | "Medium" | "Low";
 
-export interface ContactDetail {
-  type: "email" | "phone" | "other";
-  value: string;
+export interface ContactDetailSource {
   sourceUrl?: string;
   sourceType: "YELLOW_PAGES" | "WEB_SEARCH";
 }
 
+export interface ContactDetail {
+  type: "email" | "phone" | "other" | "address";
+  value: string;
+  sources: ContactDetailSource[];
+}
+
 export interface SearchCandidate {
   matchedName: string;
-  roleType: string;
-  status: string;
+  /** Absent for candidates discovered only via AI web search (no MBIE role at all). */
+  roleType?: string;
+  status?: string;
   companyName?: string;
   companyNzbn?: string;
   address?: string;
   registeredAddress?: string;
   companyStatus?: string;
   contactDetails?: ContactDetail[];
-  sourceType: "MBIE_ENTITY_ROLE";
+  sourceType: "MBIE_ENTITY_ROLE" | "AI_WEB_SEARCH" | "AI_PROPERTY_CONNECTION";
   confidenceScore: number;
   confidenceLabel: ConfidenceLabel | null;
   rationale: string;
